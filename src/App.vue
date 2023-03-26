@@ -62,14 +62,14 @@
 </template>
 
 <script>
+import * as ethers from 'ethers';
+import { Contract, Web3Provider, Provider } from 'zksync-web3';
 // eslint-disable-next-line
-const GREETER_CONTRACT_ADDRESS = ''; // TODO: Add smart contract address
+const GREETER_CONTRACT_ADDRESS = '0x7AE5270a6764ac5d0508bcfc5CA11e310Dbd0CaA';
 // eslint-disable-next-line
-const GREETER_CONTRACT_ABI = []; // TODO: Complete and import the ABI
-
+const GREETER_CONTRACT_ABI = require('./abi.json');
 const ETH_L1_ADDRESS = '0x0000000000000000000000000000000000000000';
-const allowedTokens = require('../../front-end/src/eth.json');
-
+const allowedTokens = require('./erc20.json');
 export default {
 	name: 'App',
 	data() {
@@ -98,34 +98,101 @@ export default {
 	},
 	methods: {
 		initializeProviderAndSigner() {
-			// TODO: initialize provider and signer based on `window.ethereum`
+			this.provider = new Provider('https://zksync2-testnet.zksync.dev');
+			this.signer = new Web3Provider(window.ethereum).getSigner();
+			this.contract = new Contract(
+				GREETER_CONTRACT_ADDRESS,
+				GREETER_CONTRACT_ABI,
+				new Web3Provider(window.ethereum).getSigner()
+			);
 		},
 		async getGreeting() {
-			// TODO: return the current greeting
-			return '';
+			return await this.contract.greet();
 		},
 		async getFee() {
-			// TOOD: return formatted fee
-			return '';
+			const feeInGas = await this.contract.estimateGas.setGreeting(
+				this.newGreeting
+			);
+			const gasPriceInUnits = await this.provider.getGasPrice();
+
+			return ethers.utils.formatUnits(
+				feeInGas.mul(gasPriceInUnits),
+				this.selectedToken.decimals
+			);
 		},
 		async getBalance() {
 			// Return formatted balance
-			return '';
+			const balanceInUnits = await this.signer.getBalance(
+				this.selectedToken.l2Address
+			);
+			return ethers.utils.formatUnits(
+				balanceInUnits,
+				this.selectedToken.decimals
+			);
 		},
 		async getOverrides() {
 			if (this.selectedToken.l1Address != ETH_L1_ADDRESS) {
-				// TODO: Return data for the paymaster
+				const testnetPaymaster =
+					await this.provider.getTestnetPaymasterAddress();
+
+				const gasPrice = await this.provider.getGasPrice();
+
+				// estimate gasLimit via paymaster
+				const paramsForFeeEstimation = utils.getPaymasterParams(
+					testnetPaymaster,
+					{
+						type: 'ApprovalBased',
+						minimalAllowance: ethers.BigNumber.from('1'),
+						token: this.selectedToken.l2Address,
+						innerInput: new Uint8Array(),
+					}
+				);
+
+				// estimate gasLimit via paymaster
+				const gasLimit = await this.contract.estimateGas.setGreeting(
+					this.newGreeting,
+					{
+						customData: {
+							gasPerPubdata: utils.DEFAULT_GAS_PER_PUBDATA_LIMIT,
+							paymasterParams: paramsForFeeEstimation,
+						},
+					}
+				);
+
+				const fee = gasPrice.mul(gasLimit.toString());
+
+				const paymasterParams = utils.getPaymasterParams(testnetPaymaster, {
+					type: 'ApprovalBased',
+					token: this.selectedToken.l2Address,
+					minimalAllowance: fee,
+					// empty bytes as testnet paymaster does not use innerInput
+					innerInput: new Uint8Array(),
+				});
+
+				return {
+					maxFeePerGas: gasPrice,
+					maxPriorityFeePerGas: ethers.BigNumber.from(0),
+					gasLimit,
+					customData: {
+						gasPerPubdata: utils.DEFAULT_GAS_PER_PUBDATA_LIMIT,
+						paymasterParams,
+					},
+				};
 			}
 
 			return {};
 		},
+
 		async changeGreeting() {
 			this.txStatus = 1;
 			try {
-				// TODO: Submit the transaction
+				const txHandle = await this.contract.setGreeting(
+					this.newGreeting,
+					await this.getOverrides()
+				);
 				this.txStatus = 2;
 
-				// TODO: Wait for transaction compilation
+				await txHandle.wait();
 				this.txStatus = 3;
 
 				// Update greeting
